@@ -7,7 +7,7 @@ import os
 
 # ========== НАСТРОЙКИ ==========
 # Каналы для отслеживания
-CHANNELS = ['radarrussiia', 'lpr1_treugolnik']
+CHANNELS = ['radarrussiia', 'lpr1_treugolnik', 'radar_plus_bpla']
 
 # Путь к файлу со статусами
 STATUS_FILE = 'region_status.json'
