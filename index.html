@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Карта тревог БПЛА — линейка (без попапов)</title>
+    <style>
+        #map { height: 100vh; width: 100%; }
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; }
+        
+        .alarm-btn, .ruler-btn {
+            position: absolute;
+            top: 20px;
+            z-index: 1000;
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 40px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .alarm-btn { right: 20px; }
+        .ruler-btn { right: 240px; background: linear-gradient(135deg, #444, #222); }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            z-index: 3000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background: #1a1a2e;
+            border-radius: 20px;
+            width: 400px;
+            max-width: 90%;
+            max-height: 80%;
+            overflow: auto;
+            color: white;
+        }
+        .modal-header {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            padding: 15px 20px;
+            border-radius: 20px 20px 0 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 28px;
+            cursor: pointer;
+        }
+        .modal-body { padding: 20px; }
+        .alarm-city {
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 12px;
+            background: #16213e;
+            border-left: 5px solid;
+            cursor: pointer;
+        }
+        .search-box {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 25px;
+            border: none;
+            background: #0f3460;
+            color: white;
+        }
+        .badge {
+            background: white;
+            color: #ff4444;
+            border-radius: 20px;
+            padding: 2px 10px;
+            margin-left: 10px;
+        }
+        
+        .distance-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(8px);
+            padding: 10px 18px;
+            border-radius: 12px;
+            color: #ffcc00;
+            font-size: 14px;
+            font-weight: bold;
+            border-left: 3px solid #ffcc00;
+            pointer-events: none;
+        }
+        
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(5px);
+            padding: 8px 15px;
+            border-radius: 12px;
+            color: white;
+            font-size: 12px;
+            border-right: 3px solid #ff4444;
+        }
+        .legend span { display: inline-block; width: 20px; height: 12px; margin-right: 5px; }
+        
+        .custom-popup .leaflet-popup-content-wrapper {
+            background: #1a1a2e;
+            color: white;
+            border-radius: 16px;
+            border-left: 5px solid #ff6666;
+        }
+        .region-title { font-size: 18px; font-weight: bold; margin-bottom: 5px; }
+        .region-status { font-size: 13px; color: #ddd; }
+        
+        .reset-btn {
+            position: absolute;
+            bottom: 100px;
+            left: 20px;
+            z-index: 1000;
+            background: #333;
+            color: white;
+            border: none;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        
+        .ruler-active {
+            box-shadow: 0 0 0 2px white, 0 0 0 4px #ffcc00 !important;
+        }
+    </style>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+
+<button class="alarm-btn" id="alarmBtn">🚨 СПИСОК ТРЕВОГ <span id="alarmCount" class="badge">0</span></button>
+<button class="ruler-btn" id="rulerBtn">📏 ЛИНЕЙКА</button>
+<div id="map"></div>
+<div class="distance-panel" id="distancePanel">📏 Нажми «ЛИНЕЙКА», затем кликни на карту</div>
+<button class="reset-btn" id="resetBtn" style="display:none;">🗑️ Сбросить линейку</button>
+<div class="legend">
+    <b>Уровни опасности</b><br>
+    <span style="background: #FFD700;"></span> БПЛА / Дроны<br>
+    <span style="background: #FF0000;"></span> Ракетная опасность<br>
+    <span style="background: #4a4a5a;"></span> Безопасно
+</div>
+
+<div id="modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>🚨 Список тревог</h3>
+            <button class="close-btn" id="closeModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <input type="text" id="searchInput" class="search-box" placeholder="🔍 Поиск региона...">
+            <div id="alarmList"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ========== ДАННЫЕ ПО РЕГИОНАМ ==========
+    const regionStatuses = {
+        "Самарская область": { status: "Отбой / Спокойно", symbol: "○", type: "safe" },
+        "Белгородская область": { status: "Обстрелы / БПЛА", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Брянская область": { status: "Активные БПЛА", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Курская область": { status: "Ракетная опасность", symbol: "🔴", type: "missile", color: "#FF0000" },
+        "Московская область": { status: "Атаки БПЛА", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "г. Москва": { status: "Атаки БПЛА", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Ростовская область": { status: "Угроза БПЛА", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Республика Крым": { status: "Атака дронов", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Краснодарский край": { status: "Воздушная цель", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Воронежская область": { status: "Ракетная тревога", symbol: "🔴", type: "missile", color: "#FF0000" },
+        "Ленинградская область": { status: "Угроза дронов", symbol: "⚠️", type: "drone", color: "#FFD700" },
+        "Волгоградская область": { status: "Ракетная тревога", symbol: "🔴", type: "missile", color: "#FF0000" },
+        "Саратовская область": { status: "Ракетная опасность", symbol: "🔴", type: "missile", color: "#FF0000" }
+    };
+
+    function getFillColor(regionName) {
+        let status = regionStatuses[regionName];
+        if (!status) return "#4a4a5a";
+        if (status.type === "drone") return "#FFD700";
+        if (status.type === "missile") return "#FF0000";
+        return "#4a4a5a";
+    }
+
+    function getPopupContent(regionName) {
+        let status = regionStatuses[regionName];
+        if (status) {
+            return `<div class="region-title">${regionName}</div>
+                    <div class="region-status"><span class="status-symbol">${status.symbol}</span> ${status.status}</div>`;
+        }
+        return `<div class="region-title">${regionName}</div>
+                <div class="region-status"><span class="status-symbol">○</span> Спокойно / Без тревог</div>`;
+    }
+
+    const map = L.map('map').setView([62, 80], 4);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap',
+        subdomains: 'abcd'
+    }).addTo(map);
+
+    // ========== ЛИНЕЙКА (БЕЗ ПОПАПОВ) ==========
+    let rulerMode = false;
+    let startPoint = null;
+    let endPoint = null;
+    let rulerLine = null;
+    let startMarker = null;
+    let endMarker = null;
+    let currentClickListener = null;
+    let geoJsonLayer = null; // сохраняем слой с регионами
+
+    function haversineDistance(p1, p2) {
+        const R = 6371;
+        const dLat = (p2.lat - p1.lat) * Math.PI / 180;
+        const dLng = (p2.lng - p1.lng) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(p1.lat * Math.PI/180) * Math.cos(p2.lat * Math.PI/180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    function calculateFlightTime(distanceKm) {
+        const speed = 120;
+        const hours = distanceKm / speed;
+        const minutes = hours * 60;
+        if (minutes < 60) return `${Math.round(minutes)} мин`;
+        return `${Math.floor(hours)} ч ${Math.round(minutes % 60)} мин`;
+    }
+
+    function clearRuler() {
+        if (rulerLine) map.removeLayer(rulerLine);
+        if (startMarker) map.removeLayer(startMarker);
+        if (endMarker) map.removeLayer(endMarker);
+        rulerLine = null;
+        startMarker = null;
+        endMarker = null;
+        startPoint = null;
+        endPoint = null;
+        document.getElementById('distancePanel').innerHTML = '📏 Нажми «ЛИНЕЙКА», затем кликни на карту';
+        document.getElementById('resetBtn').style.display = 'none';
+    }
+
+    function stopRulerMode() {
+        if (rulerMode) {
+            rulerMode = false;
+            document.getElementById('rulerBtn').classList.remove('ruler-active');
+            if (currentClickListener) {
+                map.off('click', currentClickListener);
+                currentClickListener = null;
+            }
+            // Включаем обратно попапы у регионов
+            if (geoJsonLayer) {
+                geoJsonLayer.eachLayer(layer => {
+                    if (layer.unbindPopup) {
+                        layer.unbindPopup();
+                        layer.bindPopup(getPopupContent(layer.feature?.properties?.name || "Регион"), { className: 'custom-popup', minWidth: 200 });
+                    }
+                });
+            }
+        }
+    }
+
+    function startRulerMode() {
+        stopRulerMode();
+        clearRuler();
+        rulerMode = true;
+        document.getElementById('rulerBtn').classList.add('ruler-active');
+        document.getElementById('distancePanel').innerHTML = '📍 Кликни на карту: выбери ПЕРВУЮ точку';
+        
+        // Отключаем попапы у регионов
+        if (geoJsonLayer) {
+            geoJsonLayer.eachLayer(layer => {
+                if (layer.unbindPopup) {
+                    layer.unbindPopup();
+                }
+            });
+        }
+        
+        let step = 0;
+        
+        const clickHandler = (e) => {
+            if (!rulerMode) return;
+            
+            if (step === 0) {
+                startPoint = e.latlng;
+                startMarker = L.marker(startPoint, {
+                    icon: L.divIcon({ html: '🟢', iconSize: [20, 20], className: 'ruler-marker' })
+                }).addTo(map);
+                step = 1;
+                document.getElementById('distancePanel').innerHTML = '📍 Кликни на карту: выбери ВТОРУЮ точку';
+                
+            } else if (step === 1) {
+                endPoint = e.latlng;
+                endMarker = L.marker(endPoint, {
+                    icon: L.divIcon({ html: '🔴', iconSize: [20, 20], className: 'ruler-marker' })
+                }).addTo(map);
+                
+                rulerLine = L.polyline([startPoint, endPoint], {
+                    color: '#ffcc00',
+                    weight: 3,
+                    dashArray: '8, 6'
+                }).addTo(map);
+                
+                const distance = haversineDistance(startPoint, endPoint);
+                const flightTime = calculateFlightTime(distance);
+                
+                document.getElementById('distancePanel').innerHTML = `✈️ Расстояние: ${Math.round(distance)} км<br>⏱️ Время полёта БПЛА: ~${flightTime}`;
+                document.getElementById('resetBtn').style.display = 'block';
+                
+                stopRulerMode();
+                step = 0;
+            }
+        };
+        
+        currentClickListener = clickHandler;
+        map.on('click', clickHandler);
+    }
+
+    document.getElementById('rulerBtn').onclick = () => {
+        if (rulerMode) {
+            stopRulerMode();
+            clearRuler();
+        } else {
+            startRulerMode();
+        }
+    };
+    
+    document.getElementById('resetBtn').onclick = () => {
+        clearRuler();
+        stopRulerMode();
+    };
+
+    // ========== ОСНОВНАЯ КАРТА ==========
+    const geojsonUrl = 'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/russia.geojson';
+    let alarmsList = [];
+
+    function loadMapData() {
+        fetch(geojsonUrl)
+            .then(res => res.json())
+            .then(data => {
+                if (geoJsonLayer) map.removeLayer(geoJsonLayer);
+                
+                geoJsonLayer = L.geoJSON(data, {
+                    style: (feature) => {
+                        let name = feature.properties.name || feature.properties.NAME || "";
+                        let fillColor = getFillColor(name);
+                        return { color: "#888888", weight: 1.2, fillColor: fillColor, fillOpacity: 0.75 };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        let name = feature.properties.name || feature.properties.NAME || "Регион";
+                        // Привязываем попап (если не в режиме линейки)
+                        if (!rulerMode) {
+                            layer.bindPopup(getPopupContent(name), { className: 'custom-popup', minWidth: 200 });
+                        }
+                        layer.bindTooltip(name, { sticky: true });
+                        
+                        let status = regionStatuses[name];
+                        if (status && status.type !== "safe") {
+                            const center = layer.getBounds().getCenter();
+                            if (!alarmsList.find(a => a.name === name)) {
+                                alarmsList.push({ name, status: status.status, symbol: status.symbol, type: status.type, lat: center.lat, lng: center.lng });
+                            }
+                        }
+                    }
+                }).addTo(map);
+                
+                document.getElementById('alarmCount').innerHTML = alarmsList.length;
+            });
+    }
+
+    loadMapData();
+    setInterval(() => { alarmsList = []; loadMapData(); }, 72000);
+
+    // Список тревог
+    function showList(filter = '') {
+        const filtered = alarmsList.filter(r => r.name.toLowerCase().includes(filter.toLowerCase()));
+        const container = document.getElementById('alarmList');
+        container.innerHTML = '';
+        filtered.forEach(r => {
+            const div = document.createElement('div');
+            div.className = 'alarm-city';
+            div.style.borderLeftColor = r.type === "drone" ? "#FFD700" : "#FF0000";
+            div.innerHTML = `<b>${r.symbol} ${r.name}</b><br>📌 ${r.status}`;
+            div.onclick = () => { map.setView([r.lat, r.lng], 7); document.getElementById('modal').style.display = 'none'; };
+            container.appendChild(div);
+        });
+    }
+
+    document.getElementById('alarmBtn').onclick = () => { showList(''); document.getElementById('modal').style.display = 'flex'; };
+    document.getElementById('closeModal').onclick = () => document.getElementById('modal').style.display = 'none';
+    window.onclick = (e) => { if (e.target === document.getElementById('modal')) document.getElementById('modal').style.display = 'none'; };
+    document.getElementById('searchInput').oninput = (e) => showList(e.target.value);
+</script>
+</body>
+</html>
